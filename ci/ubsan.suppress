@@ -1,0 +1,25 @@
+# What this hides, and why.
+#
+# nginx 1.30.6 calls ngx_memcpy(dst, NULL, 0) from ngx_pstrdup while
+# ngx_init_cycle copies the prefix strings -- before a single module is
+# loaded.  memcpy is declared __attribute__((nonnull)), so a null source
+# is undefined behaviour even when the length is zero and nothing is read
+# or written.  The stack is nginx's own all the way down, measured here:
+#
+#     #0 ngx_pstrdup    src/core/ngx_string.c:84
+#     #1 ngx_init_cycle src/core/ngx_cycle.c:118
+#     #2 main           src/core/nginx.c:293
+#
+# This module appears in none of those reports.  The entry comes out again
+# as soon as the shipped stable line no longer carries it.
+#
+# This is the only entry, and that is measured, not assumed: with an empty
+# file the suite reports exactly this and nothing else.  A suppression
+# written on the chance that it might be needed hides whatever lands on
+# that name later, including something of ours.
+#
+# The file also has to exist at all: UndefinedBehaviorSanitizer treats a
+# suppressions path it cannot read as fatal, and nginx then does not start
+# under the sanitizer, which fails the job for a reason that has nothing
+# to do with the code.
+nonnull-attribute:ngx_pstrdup

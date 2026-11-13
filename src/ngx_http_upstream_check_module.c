@@ -403,6 +403,7 @@ static void ngx_http_upstream_check_finish_handler(ngx_event_t *event);
 
 static ngx_int_t ngx_http_upstream_check_need_exit();
 static void ngx_http_upstream_check_clear_all_events();
+static void ngx_http_upstream_check_exit_process(ngx_cycle_t *cycle);
 
 static ngx_int_t ngx_http_upstream_check_status_handler(
     ngx_http_request_t *r);
@@ -571,7 +572,7 @@ ngx_module_t  ngx_http_upstream_check_module = {
     ngx_http_upstream_check_init_process,  /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
-    NULL,                                  /* exit process */
+    ngx_http_upstream_check_exit_process,  /* exit process */
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -4088,4 +4089,22 @@ ngx_http_upstream_check_init_process(ngx_cycle_t *cycle)
     }
 
     return ngx_http_upstream_check_add_timers(cycle);
+}
+
+
+/*
+ * Releasing the per peer pools and the open check connections used to
+ * depend on a check handler happening to run while the process was on its
+ * way out: only those call need_exit, and only need_exit calls
+ * clear_all_events.  A process that was told to go between two ticks took
+ * every pool and every connection with it.  Shutdown is a thing nginx
+ * tells a module about, so it is answered here instead of being hoped for.
+ * clear_all_events guards itself against running twice and against a
+ * configuration that never set a check up, so the handler can be
+ * unconditional.
+ */
+static void
+ngx_http_upstream_check_exit_process(ngx_cycle_t *cycle)
+{
+    ngx_http_upstream_check_clear_all_events();
 }

@@ -27,6 +27,17 @@ Newest first.  Dates are release dates.
   the life of the process.  Closing it after each check ends that.
   (upstream issues #235, #267)
 
+- Every per peer pool, and every open check connection, was left behind
+  when a process was told to shut down between two ticks.  Releasing them
+  is `clear_all_events`, and the only path into it was `need_exit`, which
+  only the check handlers call; the module's exit process slot was null.
+  So the cleanup ran if a check happened to be in flight at the wrong
+  moment, and otherwise did not.  The module answers shutdown now instead
+  of hoping for it.  Measured under valgrind: one 4096 byte pool per peer
+  whose check type needs one, gone afterwards, with nothing of this
+  module left in any trace.
+  (upstream issue #235)
+
 - Nothing worked under `master_process off`.  `init_process` returned
   early for anything that was not `NGX_PROCESS_WORKER`, and a server
   running without a master is `NGX_PROCESS_SINGLE`.  No timer was ever
