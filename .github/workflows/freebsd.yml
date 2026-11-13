@@ -33,6 +33,11 @@ jobs:
             pkg install -y git pcre2 curl p5-Test-Nginx
           run: |
             . .github/versions.env
+            # Keep the build and gate scratch out of the workspace: this
+            # action rsyncs the workspace back when the job ends, and a
+            # tree with a shutting down nginx in it fails that rsync with
+            # "file has vanished".  Nothing in there is wanted afterwards.
+            export CI_WORK=$HOME/ci-work
             ci/build.sh "$NGINX_VERSION" "$HOME/nginx"
             # the job runs as root, and Test::Nginx then writes "user
             # root;" into its configuration.  root has no group of that

@@ -173,7 +173,17 @@ fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "ci/tcpcheck.sh: FAILED" >&2
+	echo "ci/tcpcheck.sh: the servers and their logs are under $WORK" >&2
 	exit 1
 fi
+
+# Tidy up after a pass, and only after a pass: a failure leaves the
+# configurations and logs where they are so there is something to read.
+# The servers are stopped by the trap, which also means their pid files
+# disappear -- a tree left behind here with a dying nginx in it is enough
+# to make an rsync of the workspace fail with "file has vanished".
+cleanup
+sleep 1
+rm -rf "$WORK"
 
 echo "ci/tcpcheck.sh: ok (tcp rise $r1 -> $r2, down and up both seen)" >&2
