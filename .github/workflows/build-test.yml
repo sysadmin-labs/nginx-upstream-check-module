@@ -1,0 +1,131 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Monday morning, so a new nginx release that breaks the patch shows
+    # up here and not in somebody's build
+    - cron: '7 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    name: pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A matrix is read before any step of its own job runs, so the release
+    # list has to arrive from an earlier job.  Which releases, and why,
+    # is written down in .github/versions.env.
+    outputs:
+      nginx: ${{ steps.read.outputs.nginx }}
+      version: ${{ steps.read.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: read
+        run: .github/scripts/pins.sh >> "$GITHUB_OUTPUT"
+
+  suite:
+    name: nginx ${{ matrix.nginx }}
+    needs: pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx: ${{ fromJSON(needs.pins.outputs.nginx) }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+
+      - name: Build nginx ${{ matrix.nginx }}
+        run: ci/build.sh '${{ matrix.nginx }}' "$HOME/nginx"
+
+      - name: Run the test suite
+        run: |
+          # The block order is pinned.  Test::Nginx shuffles by default,
+          # and a block that takes the server down is then reported
+          # against whichever block happened to run after it.
+          TEST_NGINX_NO_SHUFFLE=1 \
+            TEST_NGINX_BINARY="$HOME/nginx/sbin/nginx" prove -r t/
+
+  unpatched:
+    name: the patch is inert without the module
+    needs: pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Every hunk is wrapped in #if (NGX_HTTP_UPSTREAM_CHECK).  A patched
+    # tree built WITHOUT the module therefore has to be the stock server,
+    # and that claim is worth a gate: it is what lets a distribution carry
+    # the patch and leave the option to the user.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+        with:
+          test-nginx: 'false'
+
+      - name: Build a patched nginx without the module
+        run: |
+          . .github/versions.env
+          work=$PWD/ci-work
+          mkdir -p "$work"
+          ci/fetch-verify.sh \
+            "https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz" \
+            "$(eval echo "\$NGINX_$(echo "$NGINX_VERSION" | tr . _)_SHA256")" \
+            "$work/nginx-$NGINX_VERSION.tar.gz"
+          tar xzf "$work/nginx-$NGINX_VERSION.tar.gz" -C "$work"
+          cd "$work/nginx-$NGINX_VERSION"
+          patch -p0 --forward < "$GITHUB_WORKSPACE/patches/nginx-1.30+.patch"
+          ./configure --prefix="$HOME/plain" --with-http_ssl_module \
+            --with-stream > configure.log 2>&1 || { tail -30 configure.log; exit 1; }
+          make -j"$(nproc)" > make.log 2>&1 || { tail -40 make.log; exit 1; }
+          make install > /dev/null
+
+      - name: It starts, serves, and knows no check directive
+        run: |
+          set -eu
+          "$HOME/plain/sbin/nginx" -V
+          cat > "$HOME/plain/conf/nginx.conf" <<-'EOF'
+          daemon on;
+          events { worker_connections 64; }
+          http {
+              server {
+                  listen 18871;
+                  location / { return 200 "plain\n"; }
+              }
+          }
+          EOF
+          "$HOME/plain/sbin/nginx" -p "$HOME/plain" -c conf/nginx.conf
+          test "$(curl -sf http://127.0.0.1:18871/)" = plain
+          "$HOME/plain/sbin/nginx" -p "$HOME/plain" -s stop
+
+          # And the directive must be unknown, or the guard did not guard.
+          cat > "$HOME/plain/conf/nginx.conf" <<-'EOF'
+          daemon on;
+          events { worker_connections 64; }
+          http {
+              upstream u {
+                  server 127.0.0.1:18872;
+                  check interval=1000 type=tcp;
+              }
+              server { listen 18871; location / { proxy_pass http://u; } }
+          }
+          EOF
+          if "$HOME/plain/sbin/nginx" -p "$HOME/plain" -c conf/nginx.conf -t 2>&1 |
+             grep -q 'unknown directive "check"'; then
+            echo "ok: the patch alone adds no directive"
+          else
+            echo "the patched tree accepted check without the module" >&2
+            exit 1
+          fi

@@ -1,0 +1,36 @@
+name: TCP check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: '41 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tcpcheck:
+    name: a tcp check keeps checking
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The defect this guards against left the status reading "up", so only
+    # the rise counter catches it.  ci/tcpcheck.sh says why at length; it
+    # was shown to fail against the old behaviour before it was kept.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+        with:
+          test-nginx: 'false'
+
+      - name: Build nginx
+        run: |
+          . .github/versions.env
+          ci/build.sh "$NGINX_VERSION" "$HOME/nginx"
+
+      - name: Walk a peer through climb, death and return
+        run: env "CI_WORK=$PWD/ci-work" ci/tcpcheck.sh "$HOME/nginx/sbin/nginx"
