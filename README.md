@@ -4,6 +4,7 @@
 [![TCP check][tcpcheck-badge]][tcpcheck-link]
 [![Balancers][balancers-badge]][balancers-link]
 [![Reload][reload-badge]][reload-link]
+[![Features][features-badge]][features-link]
 [![FreeBSD][freebsd-badge]][freebsd-link]
 [![A/UBSan][sanitizers-badge]][sanitizers-link]
 [![Valgrind][valgrind-badge]][valgrind-link]
@@ -18,6 +19,8 @@
 [balancers-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/balancers.yml
 [reload-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/reload.yml/badge.svg
 [reload-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/reload.yml
+[features-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/features.yml/badge.svg
+[features-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/features.yml
 [freebsd-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/freebsd.yml/badge.svg
 [freebsd-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/freebsd.yml
 [sanitizers-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/sanitizers.yml/badge.svg
@@ -143,6 +146,30 @@ The check types:
 
 Which response statuses count as alive.
 
+### check_http_expect_body
+
+|Syntax |`check_http_expect_body string`|
+|-------|---|
+|Default|-|
+|Context|upstream|
+
+The response body has to contain `string`, or the peer is taken out even
+though its status code was fine. A status code says the server answered,
+not that what it answers with is any good: an application that has lost
+its database usually still returns 200 from the front of the stack.
+
+The match is a plain substring, case sensitive, and it is looked for after
+the end of the headers, so a match in a header does not count. Send a
+request that has a body to match: the default `check_http_send` is a
+`GET`, but if you changed it to a `HEAD` there will be nothing to look at
+and the peer will go down.
+
+```nginx
+check_http_send "GET /health HTTP/1.0\r\n\r\n";
+check_http_expect_alive http_2xx;
+check_http_expect_body "\"database\": \"ok\"";
+```
+
 ### check_keepalive_requests
 
 |Syntax |`check_keepalive_requests number`|
@@ -166,13 +193,31 @@ upstreams.
 
 ### check_status
 
-|Syntax |`check_status [html\|csv\|json]`|
+|Syntax |`check_status [html\|csv\|json\|prometheus]`|
 |-------|---|
 |Default|`html`|
 |Context|location|
 
 Serves the peer table. The format can also be chosen per request with
 `?format=`.
+
+`prometheus` serves the exposition format, with the content type a
+scraper expects, as three gauges plus the shared memory generation:
+
+```
+# HELP nginx_upstream_check_status Whether the checker holds the peer up (1) or down (0).
+# TYPE nginx_upstream_check_status gauge
+nginx_upstream_check_status{upstream="backend",server="127.0.0.1:8081",type="http"} 1
+nginx_upstream_check_rise_count{upstream="backend",server="127.0.0.1:8081",type="http"} 23
+nginx_upstream_check_fall_count{upstream="backend",server="127.0.0.1:8081",type="http"} 0
+```
+
+```nginx
+location /metrics {
+    check_status prometheus;
+    access_log off;
+}
+```
 
 ## License
 

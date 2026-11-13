@@ -49,6 +49,26 @@ Newest first.  Dates are release dates.
   block would have failed.
   (upstream issues #147, #225)
 
+### Added
+
+- `check_status prometheus`, and `?format=prometheus`, serving the
+  exposition format with the content type a scraper expects: the peer
+  state and the two counters the checker decides on as gauges, plus the
+  shared memory generation.  Every series of a metric sits under one HELP
+  and one TYPE line, which is what makes it a format rather than a page
+  with numbers on it.
+  (upstream issue #190, upstream pull request #209)
+
+- `check_http_expect_body`, which takes a peer out when the response body
+  does not contain what it should, however fine the status code was.  An
+  application that has lost its database usually still returns 200 from
+  the front of the stack.  The match is a plain substring and is looked
+  for after the end of the headers, so a match in a header does not
+  count; until the headers and then the text have arrived the check says
+  "not yet", and a peer that closes or times out first fails, which is
+  what a body that never says what it should ought to do.
+  (upstream pull request #220)
+
 ### Changed
 
 - The nginx hooks are one patch, `patches/nginx-1.30+.patch`, covering the

@@ -1,0 +1,37 @@
+name: Features
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: '59 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  features:
+    name: a check can look past the status code
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Both halves are asserted: the backend whose body says the wrong
+    # thing has to go down, and the very same backend has to stay up in
+    # an upstream that does not ask about the body.  Without the second,
+    # the first would pass on a module that marks everything down.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+        with:
+          test-nginx: 'false'
+
+      - name: Build nginx
+        run: |
+          . .github/versions.env
+          ci/build.sh "$NGINX_VERSION" "$HOME/nginx"
+
+      - name: Judge the same backend with and without a body expectation
+        run: env "CI_WORK=$PWD/ci-work" ci/features.sh "$HOME/nginx/sbin/nginx"

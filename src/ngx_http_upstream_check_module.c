@@ -231,6 +231,14 @@ struct ngx_http_upstream_check_srv_conf_s {
     ngx_check_conf_t                        *check_type_conf;
     ngx_str_t                                send;
 
+    /*
+     * Empty unless check_http_expect_body was given.  A status code says
+     * the server answered, not that what it answers with is any good: an
+     * application that has lost its database usually still returns 200
+     * from the front of the stack.
+     */
+    ngx_str_t                                expect_body;
+
     union {
         ngx_uint_t                           return_code;
         ngx_uint_t                           status_alive;
@@ -422,6 +430,8 @@ static void ngx_http_upstream_check_status_csv_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
 static void ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
+static void ngx_http_upstream_check_status_prometheus_format(ngx_buf_t *b,
+    ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
 
 static ngx_int_t ngx_http_upstream_check_addr_change_port(ngx_pool_t *pool,
     ngx_addr_t *dst, ngx_addr_t *src, ngx_uint_t port);
@@ -433,6 +443,8 @@ static char *ngx_http_upstream_check(ngx_conf_t *cf,
 static char *ngx_http_upstream_check_keepalive_requests(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_upstream_check_http_send(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+static char *ngx_http_upstream_check_http_expect_body(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_upstream_check_http_expect_alive(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
@@ -518,6 +530,13 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
     { ngx_string("check_http_expect_alive"),
       NGX_HTTP_UPS_CONF|NGX_CONF_1MORE,
       ngx_http_upstream_check_http_expect_alive,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_http_expect_body"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_http_upstream_check_http_expect_body,
       0,
       0,
       NULL },
@@ -750,6 +769,10 @@ static ngx_check_status_conf_t  ngx_check_status_formats[] = {
     { ngx_string("json"),
       ngx_string("application/json"), /* RFC 4627 */
       ngx_http_upstream_check_status_json_format },
+
+    { ngx_string("prometheus"),
+      ngx_string("text/plain; version=0.0.4; charset=utf-8"),
+      ngx_http_upstream_check_status_prometheus_format },
 
     { ngx_null_string, ngx_null_string, NULL }
 };
@@ -1526,6 +1549,7 @@ ngx_http_upstream_check_http_init(ngx_http_upstream_check_peer_t *peer)
 static ngx_int_t
 ngx_http_upstream_check_http_parse(ngx_http_upstream_check_peer_t *peer)
 {
+    u_char                              *p, *body;
     ngx_int_t                            rc;
     ngx_uint_t                           code, code_n;
     ngx_http_upstream_check_ctx_t       *ctx;
@@ -1534,7 +1558,18 @@ ngx_http_upstream_check_http_parse(ngx_http_upstream_check_peer_t *peer)
     ucscf = peer->conf;
     ctx = peer->check_data;
 
-    if ((ctx->recv.last - ctx->recv.pos) > 0) {
+    if ((ctx->recv.last - ctx->recv.pos) <= 0) {
+        return NGX_AGAIN;
+    }
+
+    /*
+     * The status line is read once per check.  With a body expected this
+     * function is called again after every further read, and the status
+     * line parser would then be handed the headers to parse as one.
+     * reinit zeroes the status before each check, so a code of zero means
+     * it has not been read yet.
+     */
+    if (ctx->status.code == 0) {
 
         rc = ngx_http_upstream_check_parse_status_line(ctx,
                                                        &ctx->recv,
@@ -1571,12 +1606,40 @@ ngx_http_upstream_check_http_parse(ngx_http_upstream_check_peer_t *peer)
                        "http_parse: code_n: %ui, conf: %ui",
                        code_n, ucscf->code.status_alive);
 
-        if (code_n & ucscf->code.status_alive) {
-            return NGX_OK;
-        } else {
+        if (!(code_n & ucscf->code.status_alive)) {
             return NGX_ERROR;
         }
-    } else {
+    }
+
+    if (ucscf->expect_body.len == 0) {
+        return NGX_OK;
+    }
+
+    /*
+     * Wait for the end of the headers before calling anything a body, so
+     * that a match inside a header cannot stand in for one.  Until the
+     * headers and then the text have arrived the answer is "not yet": the
+     * recv handler keeps reading, and if the peer closes its side or the
+     * check times out first that is a failed check -- which is what a
+     * body that never says what it should ought to be.
+     */
+    body = NULL;
+
+    for (p = ctx->recv.start; p + 4 <= ctx->recv.last; p++) {
+        if (p[0] == CR && p[1] == LF && p[2] == CR && p[3] == LF) {
+            body = p + 4;
+            break;
+        }
+    }
+
+    if (body == NULL) {
+        return NGX_AGAIN;
+    }
+
+    if (ngx_strnstr(body, (char *) ucscf->expect_body.data,
+                    ctx->recv.last - body)
+        == NULL)
+    {
         return NGX_AGAIN;
     }
 
@@ -3051,6 +3114,91 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
 }
 
 
+/*
+ * The exposition format wants every series of a metric gathered under one
+ * HELP and one TYPE line, so the peers are walked once per metric instead
+ * of once in total.  Three gauges are the whole surface worth exposing:
+ * whether the checker holds the peer up, and the two counters it decides
+ * that on.  Everything else on the status page is either constant or
+ * derivable from these.
+ *
+ * Label values are an upstream name and an address.  The first is a
+ * configuration identifier and the second is nginx's own formatting of a
+ * sockaddr; neither can carry a quote, a backslash or a newline, which is
+ * why none is escaped here.
+ */
+static void
+ngx_http_upstream_check_status_prometheus_format(ngx_buf_t *b,
+    ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag)
+{
+    ngx_uint_t                       i, m, v;
+    ngx_http_upstream_check_peer_t  *peer;
+
+    static char  *metric[] = { "nginx_upstream_check_status",
+                               "nginx_upstream_check_rise_count",
+                               "nginx_upstream_check_fall_count" };
+
+    static char  *describe[] = {
+        "Whether the checker holds the peer up (1) or down (0).",
+        "Consecutive successful checks.",
+        "Consecutive failed checks." };
+
+    peer = peers->peers.elts;
+
+    b->last = ngx_snprintf(b->last, b->end - b->last,
+            "# HELP nginx_upstream_check_generation "
+            "The shared memory generation, which a reload advances.\n"
+            "# TYPE nginx_upstream_check_generation gauge\n"
+            "nginx_upstream_check_generation %ui\n",
+            ngx_http_upstream_check_shm_generation);
+
+    for (m = 0; m < 3; m++) {
+
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                "# HELP %s %s\n"
+                "# TYPE %s gauge\n",
+                (u_char *) metric[m], (u_char *) describe[m],
+                (u_char *) metric[m]);
+
+        for (i = 0; i < peers->peers.nelts; i++) {
+
+            if (flag & NGX_CHECK_STATUS_DOWN) {
+
+                if (!peer[i].shm->down) {
+                    continue;
+                }
+
+            } else if (flag & NGX_CHECK_STATUS_UP) {
+
+                if (peer[i].shm->down) {
+                    continue;
+                }
+            }
+
+            switch (m) {
+            case 0:
+                v = peer[i].shm->down ? 0 : 1;
+                break;
+            case 1:
+                v = peer[i].shm->rise_count;
+                break;
+            default:
+                v = peer[i].shm->fall_count;
+                break;
+            }
+
+            b->last = ngx_snprintf(b->last, b->end - b->last,
+                    "%s{upstream=\"%V\",server=\"%V\",type=\"%V\"} %ui\n",
+                    (u_char *) metric[m],
+                    peer[i].upstream_name,
+                    &peer[i].peer_addr->name,
+                    &peer[i].conf->check_type_conf->name,
+                    v);
+        }
+    }
+}
+
+
 static ngx_check_conf_t *
 ngx_http_get_check_type_conf(ngx_str_t *str)
 {
@@ -3258,6 +3406,28 @@ ngx_http_upstream_check_http_send(ngx_conf_t *cf, ngx_command_t *cmd,
                                               ngx_http_upstream_check_module);
 
     ucscf->send = value[1];
+
+    return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_http_upstream_check_http_expect_body(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_str_t                           *value;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    value = cf->args->elts;
+
+    if (value[1].len == 0) {
+        return "takes a non-empty string";
+    }
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf,
+                                              ngx_http_upstream_check_module);
+
+    ucscf->expect_body = value[1];
 
     return NGX_CONF_OK;
 }
