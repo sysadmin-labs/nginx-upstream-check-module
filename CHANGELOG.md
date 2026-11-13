@@ -59,6 +59,24 @@ Newest first.  Dates are release dates.
   with numbers on it.
   (upstream issue #190, upstream pull request #209)
 
+- `check ... type=https`: a real TLS handshake through nginx's own
+  `ngx_ssl_*`, and then exactly the `http` check through the connection
+  it hands back.  The module had nothing of the sort: `ssl_hello` writes
+  a client hello onto a plain connection by hand and looks for a server
+  hello in the reply, which says something at the other end speaks TLS,
+  not that it serves.  The certificate is deliberately not verified, for
+  the reason given in the README; the connection is never kept, so every
+  check is its own handshake.  Only built where nginx has
+  `--with-http_ssl_module`.
+  (upstream issue #253, upstream pull requests #281, #283)
+
+- `check ... type=udp`: the payload goes out as a datagram and any reply
+  counts as alive.  nginx's own connect makes the socket, so it is
+  connected and the kernel reports an ICMP unreachable from a closed port
+  back to us as an error rather than dropping it.  What a reply means is
+  not something this check can judge, and it does not pretend to.
+  (upstream issue #159)
+
 - `check_http_expect_body`, which takes a peer out when the response body
   does not contain what it should, however fine the status code was.  An
   application that has lost its database usually still returns 200 from

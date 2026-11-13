@@ -126,7 +126,9 @@ The check types:
 |----|---|
 |`tcp`|Opens a connection each interval and closes it again. Cheap, and it only proves the port accepts connections.|
 |`http`|Sends `check_http_send` and matches the status against `check_http_expect_alive`.|
-|`ssl_hello`|Sends a TLS client hello and expects a server hello.|
+|`https`|A full TLS handshake, then exactly the `http` check through it. Needs an nginx built `--with-http_ssl_module`.|
+|`ssl_hello`|Writes a TLS client hello onto a plain connection and looks for a server hello in the reply. Cheaper than `https`, and it proves only that something at the other end speaks TLS, not that it serves.|
+|`udp`|Sends `check_http_send` as a datagram and counts any reply as alive. A port with nothing on it answers with ICMP unreachable, which the connected socket reports as an error.|
 |`mysql`|Expects a MySQL greeting.|
 |`ajp`|Sends an AJP CPing and expects a CPong.|
 
@@ -145,6 +147,19 @@ The check types:
 |Context|upstream|
 
 Which response statuses count as alive.
+
+There is no protocol for `udp` to agree on: you choose what goes out
+with `check_http_send`, and a datagram coming back is the whole test. It
+says the far side is listening and willing to answer; what the answer
+means is not something this check can judge, so it does not pretend to.
+
+The `https` type does not verify the certificate. This is a liveness
+probe against a server already named in the configuration, and a probe
+that called a backend dead because its certificate had expired would take
+the upstream out for a reason that has nothing to do with whether it
+serves. Whether to trust what the backend sends belongs to
+`proxy_ssl_verify`, where the traffic is. It also never keeps the
+connection: every check is its own handshake.
 
 ### check_http_expect_body
 

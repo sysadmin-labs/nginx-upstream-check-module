@@ -37,6 +37,8 @@ ok
     upstream c { server 127.0.0.1:1984; check interval=1000 type=ssl_hello; }
     upstream d { server 127.0.0.1:1984; check interval=1000 type=mysql; }
     upstream e { server 127.0.0.1:1984; check interval=1000 type=ajp; }
+    upstream f { server 127.0.0.1:1984; check interval=1000 type=https; }
+    upstream g { server 127.0.0.1:1984; check interval=1000 type=udp; }
 --- config
     location /t { return 200 "ok\n"; }
 --- request

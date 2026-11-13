@@ -156,6 +156,8 @@ typedef struct {
 #define NGX_HTTP_CHECK_SSL_HELLO             0x0004
 #define NGX_HTTP_CHECK_MYSQL                 0x0008
 #define NGX_HTTP_CHECK_AJP                   0x0010
+#define NGX_HTTP_CHECK_HTTPS                 0x0020
+#define NGX_HTTP_CHECK_UDP                   0x0040
 
 #define NGX_CHECK_HTTP_2XX                   0x0002
 #define NGX_CHECK_HTTP_3XX                   0x0004
@@ -238,6 +240,15 @@ struct ngx_http_upstream_check_srv_conf_s {
      * from the front of the stack.
      */
     ngx_str_t                                expect_body;
+
+#if (NGX_HTTP_SSL)
+    /*
+     * Created when the check type is https, and only then.  The ssl_hello
+     * type does not use it: that one writes a client hello onto a plain
+     * connection by hand and never completes a handshake.
+     */
+    ngx_ssl_t                               *ssl;
+#endif
 
     union {
         ngx_uint_t                           return_code;
@@ -382,6 +393,13 @@ static ngx_int_t ngx_http_upstream_check_ssl_hello_init(
     ngx_http_upstream_check_peer_t *peer);
 static ngx_int_t ngx_http_upstream_check_ssl_hello_parse(
     ngx_http_upstream_check_peer_t *peer);
+static ngx_int_t ngx_http_upstream_check_udp_init(
+    ngx_http_upstream_check_peer_t *peer);
+static ngx_int_t ngx_http_upstream_check_udp_parse(
+    ngx_http_upstream_check_peer_t *peer);
+static void ngx_http_upstream_check_udp_reinit(
+    ngx_http_upstream_check_peer_t *peer);
+
 static void ngx_http_upstream_check_ssl_hello_reinit(
     ngx_http_upstream_check_peer_t *peer);
 
@@ -412,6 +430,14 @@ static void ngx_http_upstream_check_finish_handler(ngx_event_t *event);
 static ngx_int_t ngx_http_upstream_check_need_exit();
 static void ngx_http_upstream_check_clear_all_events();
 static void ngx_http_upstream_check_exit_process(ngx_cycle_t *cycle);
+
+#if (NGX_HTTP_SSL)
+static char *ngx_http_upstream_check_ssl(ngx_conf_t *cf,
+    ngx_http_upstream_check_srv_conf_t *ucscf);
+static ngx_int_t ngx_http_upstream_check_ssl_init_connection(
+    ngx_http_upstream_check_peer_t *peer);
+static void ngx_http_upstream_check_ssl_handshake_handler(ngx_connection_t *c);
+#endif
 
 static ngx_int_t ngx_http_upstream_check_status_handler(
     ngx_http_request_t *r);
@@ -741,6 +767,49 @@ static ngx_check_conf_t  ngx_check_types[] = {
       ngx_http_upstream_check_ajp_reinit,
       1,
       0 },
+
+    /*
+     * There is no protocol to agree on here.  The operator decides what
+     * goes out, and a datagram coming back is the whole test: it says the
+     * far side is listening and willing to answer.  What the answer means
+     * is not something this check can judge, so it does not pretend to.
+     * A closed port answers with ICMP unreachable, which the connected
+     * socket reports as an error, and that is a failed check.
+     */
+    { NGX_HTTP_CHECK_UDP,
+      ngx_string("udp"),
+      ngx_string("\n"),
+      0,
+      ngx_http_upstream_check_send_handler,
+      ngx_http_upstream_check_recv_handler,
+      ngx_http_upstream_check_udp_init,
+      ngx_http_upstream_check_udp_parse,
+      ngx_http_upstream_check_udp_reinit,
+      1,
+      0 },
+
+#if (NGX_HTTP_SSL)
+
+    /*
+     * https is http with a handshake in front: the same send, receive and
+     * parse, over a connection ngx_ssl_create_connection has taken over.
+     * No keepalive -- every check gets its own connection and its own
+     * handshake, because a check that rides a session someone else opened
+     * proves less about the server than one that does not.
+     */
+    { NGX_HTTP_CHECK_HTTPS,
+      ngx_string("https"),
+      ngx_string("GET / HTTP/1.0\r\n\r\n"),
+      NGX_CONF_BITMASK_SET | NGX_CHECK_HTTP_2XX | NGX_CHECK_HTTP_3XX,
+      ngx_http_upstream_check_send_handler,
+      ngx_http_upstream_check_recv_handler,
+      ngx_http_upstream_check_http_init,
+      ngx_http_upstream_check_http_parse,
+      ngx_http_upstream_check_http_reinit,
+      1,
+      0 },
+
+#endif
 
     { 0,
       ngx_null_string,
@@ -1151,6 +1220,16 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     }
     ngx_memzero(&peer->pc, sizeof(ngx_peer_connection_t));
 
+    /*
+     * ngx_event_connect_peer reads this and makes a datagram socket
+     * instead of a stream one.  Connected, so send and recv work as they
+     * do everywhere else in here, and so the kernel reports an ICMP
+     * unreachable back to us instead of dropping it.
+     */
+    if (ucscf->check_type_conf->type == NGX_HTTP_CHECK_UDP) {
+        peer->pc.type = SOCK_DGRAM;
+    }
+
     peer->pc.sockaddr = peer->check_peer_addr->sockaddr;
     peer->pc.socklen = peer->check_peer_addr->socklen;
     peer->pc.name = &peer->check_peer_addr->name;
@@ -1178,6 +1257,26 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     c->read->log = c->log;
     c->write->log = c->log;
     c->pool = peer->pool;
+
+#if (NGX_HTTP_SSL)
+    if (ucscf->ssl != NULL) {
+
+        /*
+         * The timer starts before the handshake, not after it.  A server
+         * that accepts the connection and then says nothing is exactly
+         * what this check exists to notice, and without the timer running
+         * the peer would sit in the handshake for good.
+         */
+        ngx_add_timer(&peer->check_timeout_ev, ucscf->check_timeout);
+
+        if (ngx_http_upstream_check_ssl_init_connection(peer) != NGX_OK) {
+            ngx_http_upstream_check_status_update(peer, 0);
+            ngx_http_upstream_check_clean_event(peer);
+        }
+
+        return;
+    }
+#endif
 
 upstream_check_connect_done:
     peer->state = NGX_HTTP_CHECK_CONNECT_DONE;
@@ -2376,6 +2475,54 @@ ngx_http_upstream_check_http_reinit(ngx_http_upstream_check_peer_t *peer)
 
 
 static ngx_int_t
+ngx_http_upstream_check_udp_init(ngx_http_upstream_check_peer_t *peer)
+{
+    ngx_http_upstream_check_ctx_t       *ctx;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    ctx = peer->check_data;
+    ucscf = peer->conf;
+
+    ctx->send.start = ctx->send.pos = (u_char *) ucscf->send.data;
+    ctx->send.end = ctx->send.last = ctx->send.start + ucscf->send.len;
+
+    ctx->recv.start = ctx->recv.pos = NULL;
+    ctx->recv.end = ctx->recv.last = NULL;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_upstream_check_udp_parse(ngx_http_upstream_check_peer_t *peer)
+{
+    ngx_http_upstream_check_ctx_t  *ctx;
+
+    ctx = peer->check_data;
+
+    if (ctx->recv.last - ctx->recv.pos > 0) {
+        return NGX_OK;
+    }
+
+    return NGX_AGAIN;
+}
+
+
+static void
+ngx_http_upstream_check_udp_reinit(ngx_http_upstream_check_peer_t *peer)
+{
+    ngx_http_upstream_check_ctx_t  *ctx;
+
+    ctx = peer->check_data;
+
+    ctx->send.pos = ctx->send.start;
+    ctx->send.last = ctx->send.end;
+
+    ctx->recv.pos = ctx->recv.last = ctx->recv.start;
+}
+
+
+static ngx_int_t
 ngx_http_upstream_check_ssl_hello_init(ngx_http_upstream_check_peer_t *peer)
 {
     ngx_http_upstream_check_ctx_t       *ctx;
@@ -2631,6 +2778,17 @@ ngx_http_upstream_check_clean_event(ngx_http_upstream_check_peer_t *peer)
             c->write->handler = ngx_http_upstream_check_dummy_handler;
             c->read->handler = ngx_http_upstream_check_discard_handler;
         } else {
+#if (NGX_HTTP_SSL)
+            /*
+             * Without this the SSL object outlives the connection, and
+             * valgrind says so.  no_wait_shutdown because a check has
+             * nothing to gain by waiting for the peer's close_notify.
+             */
+            if (c->ssl) {
+                c->ssl->no_wait_shutdown = 1;
+                (void) ngx_ssl_shutdown(c);
+            }
+#endif
             ngx_close_connection(c);
             peer->pc.connection = NULL;
         }
@@ -3840,6 +3998,17 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
         ucscf->check_keepalive_requests = 1;
     }
 
+#if (NGX_HTTP_SSL)
+    if (ucscf->check_type_conf != NGX_CONF_UNSET_PTR
+        && ucscf->check_type_conf != NULL
+        && ucscf->check_type_conf->type == NGX_HTTP_CHECK_HTTPS)
+    {
+        if (ngx_http_upstream_check_ssl(cf, ucscf) != NGX_CONF_OK) {
+            return NGX_CONF_ERROR;
+        }
+    }
+#endif
+
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ucscf->check_type_conf = NULL;
     }
@@ -4278,3 +4447,117 @@ ngx_http_upstream_check_exit_process(ngx_cycle_t *cycle)
 {
     ngx_http_upstream_check_clear_all_events();
 }
+
+
+#if (NGX_HTTP_SSL)
+
+static char *
+ngx_http_upstream_check_ssl(ngx_conf_t *cf,
+    ngx_http_upstream_check_srv_conf_t *ucscf)
+{
+    ngx_pool_cleanup_t  *cln;
+
+    ucscf->ssl = ngx_pcalloc(cf->pool, sizeof(ngx_ssl_t));
+    if (ucscf->ssl == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    ucscf->ssl->log = cf->log;
+
+    /*
+     * The certificate is deliberately not verified.  This is a liveness
+     * probe against a server the operator has already named in the
+     * configuration; a probe that declared the backend dead because its
+     * certificate had expired would take the upstream out for a reason
+     * that has nothing to do with whether it serves.  Whether to trust
+     * what the backend sends is a question for proxy_ssl_verify, where
+     * the traffic is.
+     */
+    if (ngx_ssl_create(ucscf->ssl,
+                       NGX_SSL_TLSv1|NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2
+                       |NGX_SSL_TLSv1_3,
+                       NULL)
+        != NGX_OK)
+    {
+        return NGX_CONF_ERROR;
+    }
+
+    cln = ngx_pool_cleanup_add(cf->pool, 0);
+    if (cln == NULL) {
+        ngx_ssl_cleanup_ctx(ucscf->ssl);
+        return NGX_CONF_ERROR;
+    }
+
+    cln->handler = ngx_ssl_cleanup_ctx;
+    cln->data = ucscf->ssl;
+
+    return NGX_CONF_OK;
+}
+
+
+static ngx_int_t
+ngx_http_upstream_check_ssl_init_connection(
+    ngx_http_upstream_check_peer_t *peer)
+{
+    ngx_int_t                            rc;
+    ngx_connection_t                    *c;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    c = peer->pc.connection;
+    ucscf = peer->conf;
+
+    if (ngx_ssl_create_connection(ucscf->ssl, c,
+                                  NGX_SSL_BUFFER|NGX_SSL_CLIENT)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    rc = ngx_ssl_handshake(c);
+
+    if (rc == NGX_ERROR) {
+        return NGX_ERROR;
+    }
+
+    if (rc == NGX_AGAIN) {
+        c->ssl->handler = ngx_http_upstream_check_ssl_handshake_handler;
+        return NGX_OK;
+    }
+
+    ngx_http_upstream_check_ssl_handshake_handler(c);
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_upstream_check_ssl_handshake_handler(ngx_connection_t *c)
+{
+    ngx_http_upstream_check_peer_t  *peer;
+
+    peer = c->data;
+
+    if (!c->ssl->handshaked) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "check ssl handshake failed with peer: %V ",
+                      &peer->check_peer_addr->name);
+
+        ngx_http_upstream_check_status_update(peer, 0);
+        ngx_http_upstream_check_clean_event(peer);
+        return;
+    }
+
+    /*
+     * From here it is the plain http check.  create_connection has already
+     * put the SSL recv and send in place, so the same handlers now read
+     * and write through the handshake that just finished.
+     */
+    peer->state = NGX_HTTP_CHECK_CONNECT_DONE;
+
+    c->write->handler = peer->send_handler;
+    c->read->handler = peer->recv_handler;
+
+    c->write->handler(c->write);
+}
+
+#endif
