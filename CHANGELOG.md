@@ -61,3 +61,30 @@ Newest first.  Dates are release dates.
 
 - Builds against nginx 1.30.6 and 1.31.8 on Linux with gcc 11.5, under
   nginx's own `-Werror`, without a warning from this module.
+
+- **Every balancer honours the check**, which four open reports doubted:
+  round robin, `hash`, `hash ... consistent`, `ip_hash` and `least_conn`.
+  `ci/balancers.sh` stops a backend each one actually uses and then
+  requires that every request still succeeds and that none is answered by
+  the one that is gone, with `proxy_next_upstream off` so that a retry
+  cannot cover for a balancer that ignored the state.  Nothing had to be
+  changed for this; the gate is what keeps it true.  It discriminates:
+  with the hook taken out of `ngx_http_upstream_get_hash_peer` it reports
+  `hash` and nothing else, with it taken out of `get_chash_peer` it
+  reports `hash-consistent` and nothing else.
+  (upstream issues #210, #221, and by extension #152, #183)
+
+- **Reloading with a failing backend leaves the master alone.**  Eight
+  reloads in a row against a backend that never answers: every one
+  absorbed, the module still answering afterwards, the master's
+  descriptor count unmoved, no worker dead by signal.  `ci/reload.sh`
+  with a deliberately unreachable peer in `ci/reload.conf`.
+  (upstream issue #194)
+
+### Not reproduced
+
+- #211 reports a SIGSEGV after a few minutes on nginx 1.14.2 with the
+  version specific patch of the day, with no configuration, no trace and
+  no way to repeat it.  It is not dismissed, it is simply not actionable
+  as written; the sanitizer, valgrind, reload and balancer gates now
+  cover the ground it would have come from.

@@ -2,6 +2,8 @@
 
 [![Build & Test][build-test-badge]][build-test-link]
 [![TCP check][tcpcheck-badge]][tcpcheck-link]
+[![Balancers][balancers-badge]][balancers-link]
+[![Reload][reload-badge]][reload-link]
 [![FreeBSD][freebsd-badge]][freebsd-link]
 [![A/UBSan][sanitizers-badge]][sanitizers-link]
 [![Valgrind][valgrind-badge]][valgrind-link]
@@ -12,6 +14,10 @@
 [build-test-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/build-test.yml
 [tcpcheck-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/tcpcheck.yml/badge.svg
 [tcpcheck-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/tcpcheck.yml
+[balancers-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/balancers.yml/badge.svg
+[balancers-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/balancers.yml
+[reload-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/reload.yml/badge.svg
+[reload-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/reload.yml
 [freebsd-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/freebsd.yml/badge.svg
 [freebsd-link]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/freebsd.yml
 [sanitizers-badge]: https://github.com/sysadmin-labs/nginx-upstream-check-module/actions/workflows/sanitizers.yml/badge.svg

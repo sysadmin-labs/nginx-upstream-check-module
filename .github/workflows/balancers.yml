@@ -1,0 +1,40 @@
+name: Balancers
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: '47 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  balancers:
+    name: every balancer honours the check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The module reaches into peer selection by patching nginx, and each
+    # balancer selects on its own.  A hook that went into one and not
+    # another leaves that balancer handing requests to a backend the
+    # checker has already written off, and nothing says so: the status
+    # page still reads "down", the traffic still goes there.  ci/balancers
+    # .sh says at length why the oracle has to be the response and why
+    # proxy_next_upstream has to be off for it to mean anything.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+        with:
+          test-nginx: 'false'
+
+      - name: Build nginx
+        run: |
+          . .github/versions.env
+          ci/build.sh "$NGINX_VERSION" "$HOME/nginx"
+
+      - name: Stop a backend each balancer really uses
+        run: env "CI_WORK=$PWD/ci-work" ci/balancers.sh "$HOME/nginx/sbin/nginx"
