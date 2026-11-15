@@ -58,6 +58,35 @@ jobs:
           TEST_NGINX_NO_SHUFFLE=1 \
             TEST_NGINX_BINARY="$HOME/nginx/sbin/nginx" prove -r t/
 
+  freenginx:
+    name: freenginx
+    needs: pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # freenginx branched before NGX_HTTP_UPSTREAM_SID and ngx_md5.h
+    # reached nginx's round robin, so it needs its own patch and seven of
+    # the nginx patch's ten hunks are refused there.  We ship that patch,
+    # so we build what we ship: the module used not to compile against
+    # freenginx at all.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+
+      - name: Build freenginx
+        run: |
+          . .github/versions.env
+          ci/build.sh "freenginx-$FREENGINX_VERSION" "$HOME/freenginx"
+
+      - name: Run the test suite
+        run: |
+          TEST_NGINX_NO_SHUFFLE=1 \
+            TEST_NGINX_BINARY="$HOME/freenginx/sbin/nginx" prove -r t/
+
+      - name: The tcp check keeps checking there too
+        run: env "CI_WORK=$PWD/ci-work" ci/tcpcheck.sh "$HOME/freenginx/sbin/nginx"
+
   unpatched:
     name: the patch is inert without the module
     needs: pins

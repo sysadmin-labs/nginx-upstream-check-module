@@ -2,6 +2,32 @@
 
 Newest first.  Dates are release dates.
 
+## Unreleased
+
+### Fixed
+
+- The module did not build against freenginx at all.  `ngx_http_status_t`
+  carries a `count` member in nginx and none in freenginx, and four
+  places here used it while parsing a status code digit by digit.  The
+  counter now lives in this module's own context, which is where it
+  belonged anyway: the status line parser is handed whatever has arrived
+  and called again for the rest, so the count has to survive between
+  calls.  No preprocessor branch is needed, and both servers take the
+  same code.
+
+  The FreeBSD port had been patching around this with a local variable,
+  which starts at zero on every call and so miscounts a status code that
+  arrives split across two reads.  That patch is no longer needed.
+
+### Added
+
+- `patches/freenginx-1.30+.patch`.  freenginx branched before
+  `NGX_HTTP_UPSTREAM_SID` and `ngx_md5.h` reached nginx's round robin, so
+  the nginx patch does not apply there: seven of its ten hunks are
+  refused.  The hooks are the same, their surroundings are not.  Verified
+  to apply without offset to freenginx 1.30.2, and the server built and
+  ran with it.
+
 ## v0.5.0 (2026-11-15)
 
 ### Fixed

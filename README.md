@@ -54,7 +54,13 @@ module, and it cannot be one without those hooks.
 
 ## Requirements
 
-nginx 1.30.x or 1.31.x. One patch covers both lines.
+nginx 1.30.x or 1.31.x, or freenginx 1.30.x.
+
+`patches/nginx-1.30+.patch` covers both nginx lines. freenginx needs its
+own, `patches/freenginx-1.30+.patch`: it branched before
+`NGX_HTTP_UPSTREAM_SID` and `ngx_md5.h` reached nginx's round robin, so
+the hooks go to the same places but their surroundings differ, and the
+nginx patch is refused there.
 
 ## Building
 

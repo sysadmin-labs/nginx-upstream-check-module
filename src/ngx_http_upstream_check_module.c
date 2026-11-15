@@ -64,6 +64,17 @@ typedef struct {
 
     size_t                                   padding;
     size_t                                   length;
+
+    /*
+     * How many digits of the status code have been seen.  nginx keeps one
+     * in ngx_http_status_t; freenginx's has no such member, so the count
+     * lives here, where it also belongs: the status line parser is handed
+     * whatever has arrived so far and called again for the rest, so the
+     * count has to survive between calls.  A local variable, which is how
+     * the FreeBSD port patched around this, starts at zero each time and
+     * miscounts a status code that arrives split across two reads.
+     */
+    ngx_uint_t                               status_count;
 } ngx_http_upstream_check_ctx_t;
 
 
@@ -2040,7 +2051,7 @@ ngx_http_upstream_check_parse_fastcgi_status(ngx_http_upstream_check_ctx_t *ctx,
         "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
         "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
-    status->count = 0;
+    ctx->status_count = 0;
     status->code = 0;
     find = 0;
     name_s = name_e = NULL;
@@ -2149,7 +2160,7 @@ ngx_http_upstream_check_parse_fastcgi_status(ngx_http_upstream_check_ctx_t *ctx,
                     }
 
                     status->code = status->code * 10 + ch - '0';
-                    if (status->count++ != 0) {
+                    if (ctx->status_count++ != 0) {
                         return NGX_ERROR;
                     }
                 }
@@ -2169,7 +2180,7 @@ ngx_http_upstream_check_parse_fastcgi_status(ngx_http_upstream_check_ctx_t *ctx,
 
                 status->code = status->code * 10 + ch - '0';
 
-                if (++status->count == 3) {
+                if (++ctx->status_count == 3) {
                     return NGX_DONE;
                 }
             }
@@ -2388,7 +2399,7 @@ ngx_http_upstream_check_parse_status_line(ngx_http_upstream_check_ctx_t *ctx,
 
             status->code = status->code * 10 + ch - '0';
 
-            if (++status->count == 3) {
+            if (++ctx->status_count == 3) {
                 state = sw_space_after_status;
                 status->start = p - 2;
             }
@@ -2469,6 +2480,7 @@ ngx_http_upstream_check_http_reinit(ngx_http_upstream_check_peer_t *peer)
     ctx->recv.pos = ctx->recv.last = ctx->recv.start;
 
     ctx->state = 0;
+    ctx->status_count = 0;
 
     ngx_memzero(&ctx->status, sizeof(ngx_http_status_t));
 }
