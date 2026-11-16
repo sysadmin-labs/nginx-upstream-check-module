@@ -1,4 +1,23 @@
-/build/
-/install/
+# created by the test suite
+t/servroot/
+
+# created by ci/balancers.sh, ci/build.sh, ci/features.sh, ci/reload.sh and ci/tcpcheck.sh
+ci-work/
+
+# created by the sanitizer workflow
+sanlog/
+sanitizer.log
+sanfindings.txt
+
+# build artefacts of a module built in place
 *.o
 *.so
+
+# leftovers from patch(1)
+*.orig
+*.rej
+
+# editor leftovers
+*~
+*.swp
+*.swo
