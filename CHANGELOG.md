@@ -6,6 +6,15 @@ Newest first.  Dates are release dates.
 
 ### Fixed
 
+- An SSL check no longer leaks its `SSL` object, 81 KB at a time.  Three
+  places close a check connection, and only one of them shut the SSL side
+  down first; the one that runs when the worker is told to go did not,
+  so a check that was in flight at that moment left the object behind.
+  The shutdown also asked for a graceful close, which can return
+  `NGX_AGAIN` and leave the object for a connection that is closed in the
+  next line anyway.  All three now go through one place that takes the
+  quiet path, which frees the object there and then.
+
 - CI: the Test::Nginx cache is now keyed by the Perl build, not just by
   the runner OS.  When the hosted image moved to Ubuntu 26.04 the cached
   `~/perl5` tree was restored against a new interpreter and every test

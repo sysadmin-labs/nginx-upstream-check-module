@@ -448,6 +448,7 @@ static char *ngx_http_upstream_check_ssl(ngx_conf_t *cf,
 static ngx_int_t ngx_http_upstream_check_ssl_init_connection(
     ngx_http_upstream_check_peer_t *peer);
 static void ngx_http_upstream_check_ssl_handshake_handler(ngx_connection_t *c);
+static void ngx_http_upstream_check_ssl_free(ngx_connection_t *c);
 #endif
 
 static ngx_int_t ngx_http_upstream_check_status_handler(
@@ -1225,6 +1226,9 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
         if ((rc = ngx_http_upstream_check_peek_one_byte(c)) == NGX_OK) {
             goto upstream_check_connect_done;
         } else {
+#if (NGX_HTTP_SSL)
+            ngx_http_upstream_check_ssl_free(c);
+#endif
             ngx_close_connection(c);
             peer->pc.connection = NULL;
         }
@@ -2768,6 +2772,31 @@ ngx_http_upstream_check_status_update(ngx_http_upstream_check_peer_t *peer,
 }
 
 
+#if (NGX_HTTP_SSL)
+
+static void
+ngx_http_upstream_check_ssl_free(ngx_connection_t *c)
+{
+    if (c->ssl == NULL) {
+        return;
+    }
+
+    /*
+     * A check has nothing to gain from a graceful close: it neither waits
+     * for the peer's close_notify nor sends its own, which is what makes
+     * ngx_ssl_shutdown take the quiet path and free the SSL object right
+     * here.  Without both flags it can return NGX_AGAIN, and the object
+     * then outlives the connection that the caller is about to close.
+     */
+    c->ssl->no_wait_shutdown = 1;
+    c->ssl->no_send_shutdown = 1;
+
+    (void) ngx_ssl_shutdown(c);
+}
+
+#endif
+
+
 static void
 ngx_http_upstream_check_clean_event(ngx_http_upstream_check_peer_t *peer)
 {
@@ -2791,15 +2820,7 @@ ngx_http_upstream_check_clean_event(ngx_http_upstream_check_peer_t *peer)
             c->read->handler = ngx_http_upstream_check_discard_handler;
         } else {
 #if (NGX_HTTP_SSL)
-            /*
-             * Without this the SSL object outlives the connection, and
-             * valgrind says so.  no_wait_shutdown because a check has
-             * nothing to gain by waiting for the peer's close_notify.
-             */
-            if (c->ssl) {
-                c->ssl->no_wait_shutdown = 1;
-                (void) ngx_ssl_shutdown(c);
-            }
+            ngx_http_upstream_check_ssl_free(c);
 #endif
             ngx_close_connection(c);
             peer->pc.connection = NULL;
@@ -2896,6 +2917,9 @@ ngx_http_upstream_check_clear_all_events()
 
         c = peer[i].pc.connection;
         if (c) {
+#if (NGX_HTTP_SSL)
+            ngx_http_upstream_check_ssl_free(c);
+#endif
             ngx_close_connection(c);
             peer[i].pc.connection = NULL;
         }
