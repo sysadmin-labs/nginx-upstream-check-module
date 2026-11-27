@@ -2,7 +2,7 @@
 
 Newest first.  Dates are release dates.
 
-## Unreleased
+## v0.5.2 (2026-11-27)
 
 ### Fixed
 
@@ -21,6 +21,16 @@ Newest first.  Dates are release dates.
   file died before its first assertion with `loadable library and perl
   binaries are mismatched`, taking Build & Test, A/UBSan and Valgrind
   down together.
+
+- CI: the sanitizer run can see what it is for now.  ngx_palloc hands
+  out slices of a pool block, so a write past an allocation landed inside
+  memory ASan had handed over whole and no report was made; nginx keeps a
+  switch for exactly this and `NGX_DEBUG_PALLOC` sends every allocation
+  straight to malloc.  The reports were being lost as well, because nginx
+  redirects its own stderr onto the error log file as soon as `error_log`
+  names one, so both sanitizers write to files of their own now and the
+  findings step runs even after a failed suite, which is precisely what a
+  worker that ASan took down leaves behind.
 
 ## v0.5.1 (2026-11-15)
 
